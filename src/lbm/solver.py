@@ -1,18 +1,21 @@
-"""D2Q9 + BGK LBM 求解器：圆柱绕流（半程反弹）+ Zou/He 入口 + 对流出口。
+"""D2Q9 + BGK LBM 求解器：圆柱绕流（Bouzidi 次网格反弹）+ Zou/He 入口 + 对流出口。
 
 实现要点（相对 Mocz 教学版的严谨化）：
-- 半程反弹（link-wise）：f_ī(x_f, t+1) = f_i*(x_f, t)，x_f+e_i ∈ solid
-- 动量交换测力：F = 2 Σ_{cylinder links} e_i f_i*（静壁；f_i* 反弹时暂存于 ī 槽位）
+- Bouzidi 次网格反弹（q 解析壁距；q≡0.5 时即半程反弹 f_ī(x_f)=f_i*(x_f)）
+- 动量交换测力：F = Σ e_i [f_i* + f_ī_new]（反弹阶段累积，半程时 = 2 Σ e_i f_i*）
 - Zou/He 速度入口（西，ux=U, uy=0）；一阶对流出口（东）；顶底自由滑移（镜面）或无滑移
+- 海绵层（东西两端）：向目标态 feq(ρ0,U,0) 弛豫，吸收出/入口反射的慢变压力波，
+  消除高 Re 长时间力测量的慢波污染（v1.0 实测 τ≲0.55 时边界组合泵慢波）
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
-from .kernels import HAVE_NUMBA, _force_kernel, _step_kernel
-from .lattice import CX, CY, NL, OPP, equilibrium, macros
+from .bouzidi import apply_bb, build_link_table
+from .kernels import HAVE_NUMBA, _step_kernel
+from .lattice import CX, CY, NL, OPP, W, equilibrium, macros
 
 
 @dataclass
@@ -30,6 +33,9 @@ class CylinderCase:
     top_bottom: str = "free_slip"   # free_slip | no_slip
     outlet: str = "convective"      # convective | extrapolate
     trip: float = 1e-3         # 初始横向扰动幅度（促发涡脱落）
+    bouzidi: bool = True       # Bouzidi 次网格反弹（False → 半程反弹）
+    sponge_width: int = 32     # 东西海绵层宽度 [lu]（0 关闭）
+    sponge_sigma: float = 0.08  # 海绵层最大弛豫率
 
     @property
     def radius(self) -> float:
@@ -70,34 +76,56 @@ class Solver:
         self.f = equilibrium(rho, ux, uy)
         self.f[self.solid] = 0.0
 
-        # 反弹/测力掩码（仅圆柱链接，避免壁面力污染升阻力）
-        self._bb = []
-        self._link = []
-        ys, xs, dirs = [], [], []
-        for i in range(NL):
-            nb = np.roll(self.cyl, shift=(-CY[i], -CX[i]), axis=(0, 1))
-            m = self.fluid & nb
-            self._bb.append(m)
-            self._link.append(m)
-            if i > 0:
-                yy_i, xx_i = np.nonzero(m)
-                ys.append(yy_i)
-                xs.append(xx_i)
-                dirs.append(np.full(yy_i.size, i, dtype=np.int64))
-        self._link_y = np.concatenate(ys) if ys else np.zeros(0, dtype=np.int64)
-        self._link_x = np.concatenate(xs) if xs else np.zeros(0, dtype=np.int64)
-        self._link_i = np.concatenate(dirs) if dirs else np.zeros(0, dtype=np.int64)
+        # 反弹/测力链接表（仅圆柱链接，避免壁面力污染升阻力）
+        self._table = build_link_table(self.fluid, self.cyl,
+                                       c.cx_c, c.cy, c.radius,
+                                       bouzidi=c.bouzidi)
+        # 诊断用掩码（与链接表同源）
+        self._link = [np.zeros((c.ny, c.nx), dtype=bool) for _ in range(NL)]
+        for k in range(self._table["ys"].size):
+            self._link[int(self._table["dirs"][k])][
+                int(self._table["ys"][k]), int(self._table["xs"][k])] = True
+        self._bb = self._link  # 兼容旧名
+
+        # 海绵层剖面：sigma(x) 两端 smoothstep 升到 sponge_sigma
+        self._sigma_x = np.zeros(c.nx, dtype=np.float64)
+        w = int(c.sponge_width)
+        if w > 0 and c.sponge_sigma > 0.0:
+            xi = np.linspace(0.0, 1.0, w)
+            ramp = xi * xi * (3.0 - 2.0 * xi)  # smoothstep
+            self._sigma_x[:w] = c.sponge_sigma * ramp[::-1]
+            self._sigma_x[-w:] = c.sponge_sigma * ramp
+        # 海绵目标态 feq(ρ0, U, 0)
+        cu = CX * c.u_in
+        self._ftarget = W * c.rho0 * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * c.u_in**2)
+
         self._cyl_u1 = self.cyl.astype(np.bool_)
-        self._fluid_u1 = self.fluid.astype(np.bool_)
+        self._solid_u1 = self.solid.astype(np.bool_)
         self._free_slip = case.top_bottom == "free_slip"
         self._convective = case.outlet == "convective"
+        self._fx = 0.0
+        self._fy = 0.0
+
+        # numba 内核参数（扁平 int64/float64 数组）
+        t = self._table
+        self._l_y = np.ascontiguousarray(t["ys"], dtype=np.int64)
+        self._l_x = np.ascontiguousarray(t["xs"], dtype=np.int64)
+        self._l_i = np.ascontiguousarray(t["dirs"], dtype=np.int64)
+        self._l_q = np.ascontiguousarray(t["q"], dtype=np.float64)
+        self._l_sy = np.ascontiguousarray(t["sys"], dtype=np.int64)
+        self._l_sx = np.ascontiguousarray(t["sxs"], dtype=np.int64)
+        self._sigma_x = np.ascontiguousarray(self._sigma_x, dtype=np.float64)
+        self._ftarget = np.ascontiguousarray(self._ftarget, dtype=np.float64)
 
     # ---------- 单步 ----------
     def step(self):
         if HAVE_NUMBA:
-            _step_kernel(self.f, self._cyl_u1, self._fluid_u1,
-                         self.case.tau, self.case.u_in,
-                         self._free_slip, self._convective)
+            fx, fy = _step_kernel(
+                self.f, self._solid_u1, self.case.tau, self.case.u_in,
+                self._free_slip, self._convective,
+                self._l_y, self._l_x, self._l_i, self._l_q,
+                self._l_sy, self._l_sx, self._sigma_x, self._ftarget)
+            self._fx, self._fy = float(fx), float(fy)
             return
         self._step_numpy()
 
@@ -106,15 +134,16 @@ class Solver:
         rho, ux, uy = macros(self.f)
         feq = equilibrium(rho, ux, uy)
         self.f += -(1.0 / c.tau) * (self.f - feq)
+        # 海绵层
+        if self._sigma_x.max() > 0.0:
+            sig = self._sigma_x[None, :, None]
+            self.f += sig * (self._ftarget[None, None, :] - self.f)
         f_post = self.f
         f_new = np.empty_like(self.f)
         for i in range(NL):
             f_new[:, :, i] = np.roll(f_post[:, :, i], shift=(CY[i], CX[i]), axis=(0, 1))
-        # 半程反弹：f_ī(x_f) ← f_i*(x_f)
-        for i in range(1, NL):
-            m = self._bb[i]
-            if m.any():
-                f_new[:, :, OPP[i]][m] = f_post[:, :, i][m]
+        # Bouzidi 反弹 + 动量交换力
+        self._fx, self._fy = apply_bb(f_post, f_new, self._table)
         # 顶底自由滑移：镜面反射（cx 不变、cy 反向）
         if c.top_bottom == "free_slip":
             # 底边 y=0：错误槽位 cy>0（1,2,8）← 镜像 cy<0 的碰撞后值
@@ -166,18 +195,9 @@ class Solver:
         return np.where(self.fluid, w, np.nan)
 
     def force(self) -> tuple[float, float]:
-        """动量交换力（格子单位，单位深度）：F = 2 Σ_{圆柱链接} e_i f_i*。"""
-        if HAVE_NUMBA:
-            fx, fy = _force_kernel(self.f, self._link_y, self._link_x, self._link_i)
-            return float(fx), float(fy)
-        fx = 0.0
-        fy = 0.0
-        for i in range(1, NL):
-            m = self._link[i]
-            if not m.any():
-                continue
-            # 反弹后 ī 槽位存的是 f_i*
-            fi_star = self.f[:, :, OPP[i]][m]
-            fx += 2.0 * CX[i] * float(fi_star.sum())
-            fy += 2.0 * CY[i] * float(fi_star.sum())
-        return fx, fy
+        """动量交换力（格子单位，单位深度；取最近一次 step 的反弹值）。
+
+        F = Σ_{圆柱链接} e_i [f_i*(x_f) + f_ī_new(x_f)]；
+        半程反弹时恒等于 2 Σ e_i f_i*（旧口径）。
+        """
+        return self._fx, self._fy

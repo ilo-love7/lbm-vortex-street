@@ -1,6 +1,8 @@
-"""numba JIT 核函数：单步 LBM（碰撞→迁移→反弹→边界）。
+"""numba JIT 核函数：单步 LBM（碰撞→海绵层→迁移→Bouzidi 反弹→边界）。
 
 物理与 Solver 的 numpy 路径一致；numba 不可用时 Solver 自动回退 numpy。
+反弹统一走链接表（q≡0.5 时即半程反弹）；力在反弹阶段按动量交换累积：
+F = Σ_links e_i [f_i*(x_f) + f_ī_new(x_f)]。
 """
 from __future__ import annotations
 
@@ -27,9 +29,11 @@ OPP = np.array([0, 5, 6, 7, 8, 1, 2, 3, 4], dtype=np.int64)
 
 
 @njit(cache=True)
-def _step_kernel(f, cyl, fluid, tau, u_in, free_slip, convective):
+def _step_kernel(f, solid, tau, u_in, free_slip, convective,
+                 link_y, link_x, link_i, link_q, link_sy, link_sx,
+                 sigma_x, ftarget):
     ny, nx, _ = f.shape
-    # 1) 碰撞
+    # 1) 碰撞（BGK，全场含固体——固体节点仅作缓冲，随后清零）
     for y in range(ny):
         for x in range(nx):
             rho = 0.0
@@ -51,6 +55,13 @@ def _step_kernel(f, cyl, fluid, tau, u_in, free_slip, convective):
                 cu = CX[i] * ux + CY[i] * uy
                 feq = W[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usq)
                 f[y, x, i] += -(1.0 / tau) * (f[y, x, i] - feq)
+    # 1b) 海绵层：向目标态 feq(ρ0, U, 0) 弛豫（吸收慢变压力波，防出口/入口反射）
+    for y in range(ny):
+        for x in range(nx):
+            sig = sigma_x[x]
+            if sig > 0.0:
+                for i in range(9):
+                    f[y, x, i] += sig * (ftarget[i] - f[y, x, i])
     # 2) 迁移（pull，周期）到临时场
     f_new = np.empty_like(f)
     for y in range(ny):
@@ -67,18 +78,24 @@ def _step_kernel(f, cyl, fluid, tau, u_in, free_slip, convective):
                 elif sx >= nx:
                     sx -= nx
                 f_new[y, x, i] = f[sy, sx, i]
-    # 3) 半程反弹：f_ī(x_f) ← f_i*(x_f)
-    for y in range(ny):
-        for x in range(nx):
-            if not fluid[y, x]:
-                continue
-            for i in range(1, 9):
-                nyb = y + CY[i]
-                nxb = x + CX[i]
-                if nyb < 0 or nyb >= ny or nxb < 0 or nxb >= nx:
-                    continue
-                if cyl[nyb, nxb]:
-                    f_new[y, x, OPP[i]] = f[y, x, i]
+    # 3) Bouzidi 反弹（q≡0.5 退化半程）+ 动量交换力
+    fx = 0.0
+    fy = 0.0
+    nlink = link_y.size
+    for k in range(nlink):
+        y = link_y[k]
+        x = link_x[k]
+        i = link_i[k]
+        q = link_q[k]
+        fi = f[y, x, i]
+        if q < 0.5:
+            bb = 2.0 * q * fi + (1.0 - 2.0 * q) * f[link_sy[k], link_sx[k], i]
+        else:
+            inv = 1.0 / (2.0 * q)
+            bb = inv * fi + (2.0 * q - 1.0) * inv * f[y, x, OPP[i]]
+        f_new[y, x, OPP[i]] = bb
+        fx += CX[i] * (fi + bb)
+        fy += CY[i] * (fi + bb)
     # 4) 顶底自由滑移：镜面反射
     if free_slip:
         for x in range(nx):
@@ -109,10 +126,10 @@ def _step_kernel(f, cyl, fluid, tau, u_in, free_slip, convective):
                 f_new[y, nx - 1, i] -= u_in * (f_new[y, nx - 1, i] - f_new[y, nx - 2, i])
             else:
                 f_new[y, nx - 1, i] = f_new[y, nx - 2, i]
-    # 7) 固体清零
+    # 7) 固体清零（Bouzidi 不依赖固体节点值，可安全清零）
     for y in range(ny):
         for x in range(nx):
-            if not fluid[y, x]:
+            if solid[y, x]:
                 for i in range(9):
                     f_new[y, x, i] = 0.0
     # 写回
@@ -120,11 +137,12 @@ def _step_kernel(f, cyl, fluid, tau, u_in, free_slip, convective):
         for x in range(nx):
             for i in range(9):
                 f[y, x, i] = f_new[y, x, i]
+    return fx, fy
 
 
 @njit(cache=True)
 def _force_kernel(f, link_y, link_x, link_i):
-    """动量交换：F = 2 Σ e_i f_i*（f_i* 存于 ī 槽位）。link_y/x/i 为边界链接坐标与方向。"""
+    """（诊断用）半程反弹口径的力：F = 2 Σ e_i f_i*（f_i* 存于 ī 槽位）。"""
     fx = 0.0
     fy = 0.0
     n = link_y.size
@@ -145,5 +163,7 @@ def make_force_fn():
 def compile_step():
     """触发 JIT 编译（测试用）。"""
     f = np.zeros((4, 4, 9))
-    _step_kernel(f, np.zeros((4, 4), dtype=np.bool_), np.ones((4, 4), dtype=np.bool_),
-                 0.8, 0.05, True, True)
+    li = np.zeros(0, dtype=np.int64)
+    lq = np.zeros(0)
+    _step_kernel(f, np.zeros((4, 4), dtype=np.bool_), 0.8, 0.05, True, True,
+                 li, li, li, lq, li, li, np.zeros(4), np.zeros(9))

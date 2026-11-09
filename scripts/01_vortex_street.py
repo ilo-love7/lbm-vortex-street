@@ -22,7 +22,7 @@ from lbm.plots import plot_force_series, plot_spectrum, plot_vorticity
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_one(re: float, cfg: dict, out_dir: Path, fig_dir: Path) -> dict:
+def run_one(re: float, cfg: dict, out_dir: Path, fig_dir: Path, prefix: str = "") -> dict:
     c = cfg["case"]
     s_cfg = cfg["sim"]
     case = CylinderCase(
@@ -32,6 +32,9 @@ def run_one(re: float, cfg: dict, out_dir: Path, fig_dir: Path) -> dict:
         top_bottom=str(c.get("top_bottom", "free_slip")),
         outlet=str(c.get("outlet", "convective")),
         trip=float(c.get("trip", 1e-3)),
+        bouzidi=bool(c.get("bouzidi", True)),
+        sponge_width=int(c.get("sponge_width", 32)),
+        sponge_sigma=float(c.get("sponge_sigma", 0.08)),
     )
     st_lit = literature_st(re)
     t_period = case.d / (case.u_in * st_lit)
@@ -62,15 +65,15 @@ def run_one(re: float, cfg: dict, out_dir: Path, fig_dir: Path) -> dict:
           f"St={row['st']:.4f} (lit {st_lit:.4f}, err {row['st_err']:+.4f})  [{wall:.1f} min]",
           flush=True)
 
-    np.savez(out_dir / f"series_re{int(re)}.npz",
+    np.savez(out_dir / f"series_{prefix}re{int(re)}.npz",
              t=out["t"], cd=out["cd"], cl=out["cl"], **{k: v for k, v in row.items()})
     tag = f"Re={re:.0f}"
     plot_force_series(out["t"], out["cd"], out["cl"], f"Cd/Cl 时程 · {tag}",
-                      fig_dir / f"forces_re{int(re)}.png")
+                      fig_dir / f"forces_{prefix}re{int(re)}.png")
     freqs, spec = st["spectrum"]
     plot_spectrum(freqs, spec, st["st"], st_lit, f"升力谱 · {tag}",
-                  fig_dir / f"spectrum_re{int(re)}.png", case.d, case.u_in)
-    plot_vorticity(solver, f"涡量场 · {tag}", fig_dir / f"vorticity_re{int(re)}.png")
+                  fig_dir / f"spectrum_{prefix}re{int(re)}.png", case.d, case.u_in)
+    plot_vorticity(solver, f"涡量场 · {tag}", fig_dir / f"vorticity_{prefix}re{int(re)}.png")
     return row
 
 
@@ -82,17 +85,28 @@ def main():
     fig_dir.mkdir(exist_ok=True)
 
     re_list = [float(r) for r in cfg["sweep"]["re_list"]]
-    if len(sys.argv) > 1 and sys.argv[1] == "--re":
-        re_list = [float(sys.argv[2])]
+    prefix = ""
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "--re":
+            re_list = [float(args[i + 1])]
+            i += 2
+        elif args[i] == "--prefix":
+            prefix = f"{args[i + 1]}_" if args[i + 1] else ""
+            i += 2
+        else:
+            i += 1
 
     rows = []
     for re in re_list:
-        rows.append(run_one(float(re), cfg, out_dir, fig_dir))
+        rows.append(run_one(float(re), cfg, out_dir, fig_dir, prefix=prefix))
 
     df = pd.DataFrame(rows)
-    suffix = f"_re{int(re_list[0])}" if len(re_list) == 1 else ""
-    df.to_csv(out_dir / f"baseline_rows{suffix}.csv", index=False, encoding="utf-8-sig")
-    (out_dir / f"baseline_metrics{suffix}.json").write_text(
+    suffix = f"{prefix}re{int(re_list[0])}" if len(re_list) == 1 else prefix.rstrip("_")
+    df.to_csv(out_dir / f"baseline_rows_{suffix}.csv" if suffix else out_dir / "baseline_rows.csv",
+              index=False, encoding="utf-8-sig")
+    (out_dir / f"baseline_metrics_{suffix}.json" if suffix else out_dir / "baseline_metrics.json").write_text(
         json.dumps({"rows": rows}, ensure_ascii=False, indent=2, default=float),
         encoding="utf-8")
 

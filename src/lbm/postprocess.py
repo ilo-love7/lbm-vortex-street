@@ -49,3 +49,29 @@ def strouhal(cl: np.ndarray, d: float, u_in: float, dt: float = 1.0) -> dict:
 def literature_st(re: float) -> float:
     """文献经验式 St ≈ 0.2124 − 4.592/Re（圆柱绕流，Re ≳ 50）。"""
     return 0.2124 - 4.592 / re
+
+
+def coherent_cl(cl: np.ndarray, d: float, u_in: float, dt: float = 1.0) -> dict:
+    """升力相干峰幅（Hann 窗单边正弦幅值 2|X|/Σw）+ 带内 rms。
+
+    相干幅不受宽带力噪声膨胀影响，比 total rms 更公平（v1.1 收口口径）。
+    """
+    x = np.asarray(cl, dtype=float)
+    n = x.size
+    win = np.hanning(n)
+    xw = (x - x.mean()) * win
+    spec = np.abs(np.fft.rfft(xw))
+    freqs = np.fft.rfftfreq(n, d=dt)
+    st_arr = freqs * d / u_in
+    band = (st_arr > 0.02) & (st_arr < 0.5)
+    k = int(np.argmax(spec[band]))
+    idx = int(np.flatnonzero(band)[k])
+    amp = 2.0 * spec[idx] / win.sum()
+    # 带内 rms（主峰 ±2 谱线带通逆变换）
+    phase = np.angle(np.fft.rfft(xw))
+    mask = np.zeros_like(spec)
+    mask[max(idx - 2, 0):min(idx + 3, spec.size)] = 1.0
+    xw2 = np.fft.irfft(spec * mask * np.exp(1j * phase), n)
+    return {"cl_peak_amp": float(amp), "st_peak": float(st_arr[idx]),
+            "cl_rms_total": float(np.sqrt((x ** 2).mean())),
+            "cl_rms_band": float(np.sqrt((xw2 ** 2).mean()))}

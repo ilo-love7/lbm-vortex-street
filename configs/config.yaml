@@ -10,6 +10,9 @@ case:
   top_bottom: free_slip   # free_slip | no_slip
   outlet: convective      # convective | extrapolate
   trip: 0.001
+  bouzidi: true            # Bouzidi 次网格反弹（false → 半程反弹）
+  sponge_width: 32         # 东西海绵层宽度 [lu]（0 关闭）
+  sponge_sigma: 0.08       # 海绵层最大弛豫率（吸收出/入口反射慢波）
 
 sweep:
   re_list: [50, 100, 150, 200]
