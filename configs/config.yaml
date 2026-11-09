@@ -1,0 +1,25 @@
+# N5 LBM 圆柱绕流 · 卡门涡街（全为格子单位）
+# 注：τ=3UD/Re+0.5 须 ≥0.54，否则出入口+反弹边界组合在低 τ 泵能发散（实测）
+case:
+  nx: 840
+  ny: 280
+  d: 28.0
+  cx_c: 170.0
+  u_in: 0.1
+  rho0: 1.0
+  top_bottom: free_slip   # free_slip | no_slip
+  outlet: convective      # convective | extrapolate
+  trip: 0.001
+
+sweep:
+  re_list: [50, 100, 150, 200]
+
+sim:
+  transient_periods: 20     # 按 T≈D/(U·St_lit) 自适应
+  record_periods: 30
+  record_every: 1           # 力噪声宽频，降采样会混叠（实测 St 假峰教训）
+  snapshot_every: 500
+
+output:
+  results_dir: results
+  figures_dir: figures

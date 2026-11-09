@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.nbc
+*.nbi
+.numba_cache/
+.pytest_cache/
+results/diag_*.npz
