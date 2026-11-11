@@ -31,9 +31,12 @@ OPP = np.array([0, 5, 6, 7, 8, 1, 2, 3, 4], dtype=np.int64)
 @njit(cache=True)
 def _step_kernel(f, solid, tau, u_in, free_slip, convective,
                  link_y, link_x, link_i, link_q, link_sy, link_sx,
-                 sigma_x, ftarget):
+                 sigma_x, ftarget,
+                 use_mrt, Mm, Minv, Sdiag):
     ny, nx, _ = f.shape
-    # 1) 碰撞（BGK，全场含固体——固体节点仅作缓冲，随后清零）
+    m = np.empty(9, dtype=np.float64)
+    meq = np.empty(9, dtype=np.float64)
+    # 1) 碰撞（BGK 或 MRT，全场含固体——固体节点仅作缓冲，随后清零）
     for y in range(ny):
         for x in range(nx):
             rho = 0.0
@@ -50,11 +53,37 @@ def _step_kernel(f, solid, tau, u_in, free_slip, convective,
             else:
                 ux = 0.0
                 uy = 0.0
-            usq = ux * ux + uy * uy
-            for i in range(9):
-                cu = CX[i] * ux + CY[i] * uy
-                feq = W[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usq)
-                f[y, x, i] += -(1.0 / tau) * (f[y, x, i] - feq)
+            if use_mrt:
+                # m = M·f；meq；m += S(meq−m)；f = Minv·m
+                for r in range(9):
+                    acc = 0.0
+                    for cidx in range(9):
+                        acc += Mm[r, cidx] * f[y, x, cidx]
+                    m[r] = acc
+                usq = ux * ux + uy * uy
+                rho_m = m[0]
+                meq[0] = rho_m
+                meq[1] = -2.0 * rho_m + 3.0 * rho_m * usq
+                meq[2] = rho_m - 3.0 * rho_m * usq
+                meq[3] = rho_m * ux
+                meq[4] = -rho_m * ux
+                meq[5] = rho_m * uy
+                meq[6] = -rho_m * uy
+                meq[7] = rho_m * (ux * ux - uy * uy)
+                meq[8] = rho_m * ux * uy
+                for r in range(9):
+                    m[r] += Sdiag[r] * (meq[r] - m[r])
+                for cidx in range(9):
+                    acc = 0.0
+                    for r in range(9):
+                        acc += Minv[cidx, r] * m[r]
+                    f[y, x, cidx] = acc
+            else:
+                usq = ux * ux + uy * uy
+                for i in range(9):
+                    cu = CX[i] * ux + CY[i] * uy
+                    feq = W[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usq)
+                    f[y, x, i] += -(1.0 / tau) * (f[y, x, i] - feq)
     # 1b) 海绵层：向目标态 feq(ρ0, U, 0) 弛豫（吸收慢变压力波，防出口/入口反射）
     for y in range(ny):
         for x in range(nx):
@@ -166,4 +195,5 @@ def compile_step():
     li = np.zeros(0, dtype=np.int64)
     lq = np.zeros(0)
     _step_kernel(f, np.zeros((4, 4), dtype=np.bool_), 0.8, 0.05, True, True,
-                 li, li, li, lq, li, li, np.zeros(4), np.zeros(9))
+                 li, li, li, lq, li, li, np.zeros(4), np.zeros(9),
+                 False, np.zeros((9, 9)), np.zeros((9, 9)), np.zeros(9))

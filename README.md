@@ -2,7 +2,7 @@
 
 从零实现**二维格子 Boltzmann（D2Q9 + BGK）**流体求解器：圆柱绕流卡门涡街，Re=50–200 参数扫描，升阻力系数与 Strouhal 数对照文献经验式。
 
-> 博远线上科研提案 N5 ｜ 流体/CFD ｜ 数值仿真 ｜ v1.1.0 ｜ 2026-11-10
+> 博远线上科研提案 N5 ｜ 流体/CFD ｜ 数值仿真 ｜ v1.2.0 ｜ 2026-11-11
 
 ## 方法
 
@@ -44,12 +44,24 @@
 - **稳定性红线外推**：Re=300（τ=0.528，v1.0 红线以下）长跑稳定。
 - v1.0→v1.1 对比与网格收敛详见报告 §5。
 
+## v1.2 结果摘要（MRT / 9 点 Re 曲线 / 探针双测法，2026-11-11）
+
+| 实验 | 结论 |
+|---|---|
+| **E10 MRT 碰撞** | **「低 τ 稳定化」假说证伪**：BGK 在 τ=0.524（Re=350）已稳定，六组全不发散；MRT 降噪随 Re/τ 非单调（Re=300 块 std ×1.95 更差，Re=350 漂移→0.00002），且把 Cd 系统抬高 +1.3~1.9%（动量交换法读取壁面非平衡矩）。**默认仍用 BGK**。 |
+| **E11 九点曲线** | 新跑 Re=75/125/175/250 平滑嵌入 v1.1 五点；St 相对 Fey 的偏差 **+6.73%(Re100)→+11.06%(Re300) 单调上升**（9 点均值 +9.11%）→ 残余偏差含随 Re 增长的 2D 约束误差，不只是固定 10% 阻塞；Cd 呈 U 形（极小 1.4507 @Re175）。 |
+| **E12 探针谱** | 三站 uy/ω 探针与升力谱 St **完全一致（0.000%）**；互谱对流速度 U_c/U = 0.590–0.746（随下游距离与 Re 增大），涡间距 λ/D=3.16–3.83；二次谐波比 ~10⁻⁴（近纯正弦，口径升级后离线重算确认）。 |
+
+- **工程**：12 case 进程池并行 + 逐 case 断点缓存，墙钟 67 min（串行外推 ~300 min）；
+  `--repost` / `--figures-only` 可在不重跑 CFD 的情况下刷新后处理与图（谱口径升级即用此路径）。
+- 32 项单测；详见报告 §7–§9 与 `results/v12_*.json`、`figures/v12_*.png`。
+
 ## 运行
 
 ```bash
 pip install -r requirements.txt
-bash run_all.sh        # 00 校验 → 01 Re 扫描 → 02 动画
-python -m pytest tests/ -q
+bash run_all.sh        # 00 校验 → 01 Re 扫描 → 02 动画 → 03/04 收敛与对比 → 05 v1.2 深化（12 进程并行）
+python -m pytest tests/ -q   # 32 项
 ```
 
 参考实现（参数对照基准）：Philip Mocz (2020) `latticeboltzmann-python`（Princeton 教学版）。
@@ -58,17 +70,21 @@ python -m pytest tests/ -q
 
 ```
 configs/config.yaml    网格/Re 列表/记录周期/边界与海绵选项
-src/lbm/               lattice(D2Q9) / solver(Bouzidi+出入口+海绵) / kernels(numba JIT)
-                       bouzidi(次网格反弹) / forces(动量交换) / postprocess(St/统计) / plots
-scripts/00-03          校验 → Re 扫描 → 涡街 GIF → 网格收敛
-tests/                 格子恒等式/求解器/边界/测力/St/Bouzidi/海绵 单测（11 项）
+src/lbm/               lattice(D2Q9) / solver(Bouzidi+出入口+海绵，可选 BGK/MRT) / kernels(numba JIT)
+                       bouzidi(次网格反弹) / mrt(v1.2 矩空间碰撞) / spectrum(v1.2 探针谱分析)
+                       forces(动量交换) / postprocess(St/统计) / plots
+scripts/00-05          校验 → Re 扫描 → 涡街 GIF → 网格收敛 → v1.1 对比 → v1.2 深化(并行+缓存)
+tests/                 格子恒等式/求解器/边界/测力/St/Bouzidi/海绵/MRT/谱/并行调度（32 项）
 reports/               基准评测报告-N5.md / 工作记录-N5.md
-results/               baseline_metrics*.json + series_*.npz + grid_conv_*
-figures/               涡量场/力时程/升力谱 + GIF
+results/               baseline_metrics*.json + series_*.npz + v12_*.json / v12_cache/ + grid_conv_*
+figures/               涡量场/力时程/升力谱 + v12_*.png + GIF
 ```
 
 ## 未做项（如实标注）
 
 - ~~瞬时力慢波污染~~ → **v1.1 已根治**（Bouzidi 削噪声源 + 海绵吸收边界反射；Re=200 冒烟 4000 步负 Cd 0%、std 0.05）。
 - ~~阶梯壁面 Cd 偏差~~ → **v1.1 大幅缓解**（Bouzidi 解析壁距），残余偏差 +10% 阻塞/边界层欠分辨，网格收敛见报告 §5.3。
-- MRT 碰撞、应力张量面积分双口径互证、振荡圆柱/串列双圆柱、Re=1000+（LES）未做（v1.2 方向）。
+- ~~MRT 碰撞~~ → **v1.2 已实现，但「低 τ 稳定化」证伪**（BGK τ=0.524 已稳定，MRT 反会系统抬高 Cd +1.3~1.9%），默认路径不启用，见报告 §8.1。
+- **应力张量面积分双口径互证**（新增、最高优先）：判定 MRT 的 Cd 偏移是物理还是动量交换法对非平衡矩的测量伪影。
+- **3D 校验**（优先级上调：St 偏差随 Re 单调增大，2D 约束在 Re>180 的失稳缺失）、加大计算域消除 10% 阻塞；
+- 振荡圆柱（受迫/VIV）、串列/并列双圆柱干涉、Re=1000+（LES）未做。

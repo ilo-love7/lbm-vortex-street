@@ -16,6 +16,7 @@ import numpy as np
 from .bouzidi import apply_bb, build_link_table
 from .kernels import HAVE_NUMBA, _step_kernel
 from .lattice import CX, CY, NL, OPP, W, equilibrium, macros
+from .mrt import mrt_collide, mrt_matrices, mrt_relax_rates
 
 
 @dataclass
@@ -36,6 +37,8 @@ class CylinderCase:
     bouzidi: bool = True       # Bouzidi 次网格反弹（False → 半程反弹）
     sponge_width: int = 32     # 东西海绵层宽度 [lu]（0 关闭）
     sponge_sigma: float = 0.08  # 海绵层最大弛豫率
+    collision: str = "bgk"     # bgk | mrt（v1.2）
+    mrt_preset: str = "magic"  # magic | bulk | bgk（见 mrt.mrt_relax_rates）
 
     @property
     def radius(self) -> float:
@@ -106,6 +109,19 @@ class Solver:
         self._fx = 0.0
         self._fy = 0.0
 
+        # MRT 矩阵（v1.2）：use_mrt=0 时内核走 BGK
+        self._use_mrt = case.collision == "mrt"
+        if self._use_mrt:
+            M, Minv = mrt_matrices()
+            S = mrt_relax_rates(1.0 / case.tau, preset=case.mrt_preset)
+            self._M = np.ascontiguousarray(M)
+            self._Minv = np.ascontiguousarray(Minv)
+            self._Sdiag = np.ascontiguousarray(S)
+        else:
+            self._M = np.zeros((9, 9))
+            self._Minv = np.zeros((9, 9))
+            self._Sdiag = np.zeros(9)
+
         # numba 内核参数（扁平 int64/float64 数组）
         t = self._table
         self._l_y = np.ascontiguousarray(t["ys"], dtype=np.int64)
@@ -124,7 +140,8 @@ class Solver:
                 self.f, self._solid_u1, self.case.tau, self.case.u_in,
                 self._free_slip, self._convective,
                 self._l_y, self._l_x, self._l_i, self._l_q,
-                self._l_sy, self._l_sx, self._sigma_x, self._ftarget)
+                self._l_sy, self._l_sx, self._sigma_x, self._ftarget,
+                self._use_mrt, self._M, self._Minv, self._Sdiag)
             self._fx, self._fy = float(fx), float(fy)
             return
         self._step_numpy()
@@ -132,8 +149,11 @@ class Solver:
     def _step_numpy(self):
         c = self.case
         rho, ux, uy = macros(self.f)
-        feq = equilibrium(rho, ux, uy)
-        self.f += -(1.0 / c.tau) * (self.f - feq)
+        if self._use_mrt:
+            self.f = mrt_collide(self.f, self._M, self._Minv, self._Sdiag, c.tau)
+        else:
+            feq = equilibrium(rho, ux, uy)
+            self.f += -(1.0 / c.tau) * (self.f - feq)
         # 海绵层
         if self._sigma_x.max() > 0.0:
             sig = self._sigma_x[None, :, None]
