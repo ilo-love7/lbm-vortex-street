@@ -2,7 +2,7 @@
 
 从零实现**二维格子 Boltzmann（D2Q9 + BGK）**流体求解器：圆柱绕流卡门涡街，Re=50–200 参数扫描，升阻力系数与 Strouhal 数对照文献经验式。
 
-> 博远线上科研提案 N5 ｜ 流体/CFD ｜ 数值仿真 ｜ v1.2.0 ｜ 2026-11-11
+> 博远线上科研提案 N5 ｜ 流体/CFD ｜ 数值仿真 ｜ v1.3.0 ｜ 2026-11-14
 
 ## 方法
 
@@ -56,12 +56,27 @@
   `--repost` / `--figures-only` 可在不重跑 CFD 的情况下刷新后处理与图（谱口径升级即用此路径）。
 - 32 项单测；详见报告 §7–§9 与 `results/v12_*.json`、`figures/v12_*.png`。
 
+## v1.3 结果摘要（阻塞比外推 / 四口径测力 / LES，2026-11-14）
+
+| 实验 | 结论 |
+|---|---|
+| **E13 β→0 外推** | 固定 D/U/nx 只改域高，β=20%→5% 把 Re=100 的 St 偏差 **+20.23%→+2.86%**、Cd **1.725→1.395**；β→0 外推**口径敏感**（线性 0.1597 / −4.06%，二次 0.1704 / +2.35%，差 6.4pp）。Re=250 三点线性外推残余仍 **+4.71%**，随 Re 增长的 **2D 约束误差**加大计算域消不掉 → 3D 校验仍是最高优先。 |
+| **E14 四口径测力** | 「应力张量面积分」其实是离散守恒律的**恒等变换**：CV-link 扣除累积项后逐位复现 MEM（最大差 <2e-12），判不了测力伪影；CV-node 围道分散 45–49%、经典 wake survey 低估 50%（两个反例）。改用只读守恒矩的**严格两截面尾流亏损**后，Re=300 的 MRT 偏移在 WAKE **+1.24%** 与 MEM **+1.18%** 同步 → **真实流场改变**，推翻 v1.2「只是读数伪影」的推测；默认 BGK 不变但理由改写。 |
+| **E15 Smagorinsky LES** | 9/9 全稳，但纯 BGK 在 τ₀=0.5075（Re=800）已稳，**LES 无稳定化收益**：Cs=0→0.30 只用 4.1% 亚格子黏度就把 Re=800 的 Cd **1.500→1.663（+10.9%）**、Cl 峰幅压低 8–19%，是纯数值耗散的负收益。与 v1.2 的 MRT 稳定化证伪二次呼应。 |
+| **E15 持续入口扰动** | ε=0→30% U，St **逐位不变 0.2118**、Cd 仅 +0.09%、起振 2.11→2.09T。独立诊断证明入口 `uy` RMS 涨 56× 却**被西侧目标态海绵完全吸收**（x=26 之后四档恒 1.46e-3）→ 统计吸引子不变；这既是 v1.1 慢波根治的机制，也说明 VIV / 来流湍流度实验必须先改海绵协议。 |
+
+- 25/25 case 成功、12 进程并行墙钟 **28.3 min**（逐 case 断点缓存）；**86 项单测全绿**；
+- 报告 §10–§12、`results/v13_*.json` / `v13_case_rows.csv` / `v13_summary_tables.md`（表 A–G）、4 张 `figures/v13_*.png`；
+- 关键口径限定：E13 外推对拟合阶数敏感（只报区间）；E14 用 16T 比 v1.2 的 24T 短；E15 全部是 2D 结果，入口扰动零响应是本仓库海绵协议的结构性后果，不是物理普适结论。
+
 ## 运行
 
 ```bash
 pip install -r requirements.txt
-bash run_all.sh        # 00 校验 → 01 Re 扫描 → 02 动画 → 03/04 收敛与对比 → 05 v1.2 深化（12 进程并行）
-python -m pytest tests/ -q   # 32 项
+bash run_all.sh        # 00 校验 → 01 Re 扫描 → 02 动画 → 03/04 收敛与对比
+                       # → 05 v1.2 深化 → 06/07 v1.3 深化（均为 12 进程并行 + 断点缓存）
+python -m pytest tests/ -q   # 86 项
+python scripts/06_v13_deepening.py --figures-only   # 不重跑 CFD，只刷新 v1.3 JSON/图/CSV
 ```
 
 参考实现（参数对照基准）：Philip Mocz (2020) `latticeboltzmann-python`（Princeton 教学版）。
@@ -70,14 +85,19 @@ python -m pytest tests/ -q   # 32 项
 
 ```
 configs/config.yaml    网格/Re 列表/记录周期/边界与海绵选项
-src/lbm/               lattice(D2Q9) / solver(Bouzidi+出入口+海绵，可选 BGK/MRT) / kernels(numba JIT)
+src/lbm/               lattice(D2Q9) / solver(Bouzidi+出入口+海绵，可选 BGK/MRT/LES) / kernels(numba JIT)
                        bouzidi(次网格反弹) / mrt(v1.2 矩空间碰撞) / spectrum(v1.2 探针谱分析)
                        forces(动量交换) / postprocess(St/统计) / plots
-scripts/00-05          校验 → Re 扫描 → 涡街 GIF → 网格收敛 → v1.1 对比 → v1.2 深化(并行+缓存)
-tests/                 格子恒等式/求解器/边界/测力/St/Bouzidi/海绵/MRT/谱/并行调度（32 项）
+                       stress(v1.3 控制体双口径) / les(v1.3 Smagorinsky+入口扰动)
+                       wake(v1.3 严格两截面尾流亏损) / v13(v1.3 后处理纯函数)
+scripts/00-07          校验 → Re 扫描 → 涡街 GIF → 网格收敛 → v1.1 对比 → v1.2 深化
+                       → v1.3 深化(E13/E14/E15，并行+缓存) → v1.3 汇总表
+tests/                 格子恒等式/求解器/边界/测力/St/Bouzidi/海绵/MRT/谱/并行调度
+                       + v1.3 应力/LES/链接守恒/尾流/汇总口径（86 项）
 reports/               基准评测报告-N5.md / 工作记录-N5.md
-results/               baseline_metrics*.json + series_*.npz + v12_*.json / v12_cache/ + grid_conv_*
-figures/               涡量场/力时程/升力谱 + v12_*.png + GIF
+results/               baseline_metrics*.json + series_*.npz + v12_*.json / v12_cache/
+                       + v13_*.json / v13_summary_tables.md / v13_cache/ + grid_conv_*
+figures/               涡量场/力时程/升力谱 + v12_*.png + v13_*.png + GIF
 ```
 
 ## 未做项（如实标注）
@@ -85,6 +105,8 @@ figures/               涡量场/力时程/升力谱 + v12_*.png + GIF
 - ~~瞬时力慢波污染~~ → **v1.1 已根治**（Bouzidi 削噪声源 + 海绵吸收边界反射；Re=200 冒烟 4000 步负 Cd 0%、std 0.05）。
 - ~~阶梯壁面 Cd 偏差~~ → **v1.1 大幅缓解**（Bouzidi 解析壁距），残余偏差 +10% 阻塞/边界层欠分辨，网格收敛见报告 §5.3。
 - ~~MRT 碰撞~~ → **v1.2 已实现，但「低 τ 稳定化」证伪**（BGK τ=0.524 已稳定，MRT 反会系统抬高 Cd +1.3~1.9%），默认路径不启用，见报告 §8.1。
-- **应力张量面积分双口径互证**（新增、最高优先）：判定 MRT 的 Cd 偏移是物理还是动量交换法对非平衡矩的测量伪影。
-- **3D 校验**（优先级上调：St 偏差随 Re 单调增大，2D 约束在 Re>180 的失稳缺失）、加大计算域消除 10% 阻塞；
-- 振荡圆柱（受迫/VIV）、串列/并列双圆柱干涉、Re=1000+（LES）未做。
+- ~~应力张量面积分双口径互证~~ → **v1.3 已做并升级为四口径互证**（MEM / CV-node / CV-link / WAKE）；结论见报告 §11.2。
+- ~~加大计算域消除 10% 阻塞~~ → **v1.3 已做 β→0 外推**（E13，把阻塞修正与 2D 约束误差定量分离）。
+- ~~Re=1000+（LES）~~ → **v1.3 已做 Smagorinsky LES 与持续入口扰动**（E15），给出 2D LES 的适用边界。
+- **3D 校验**（仍是最高优先：St 偏差随 Re 单调增大，2D 约束在 Re>180 的失稳缺失）；
+- 振荡圆柱（受迫/VIV）、串列/并列双圆柱干涉未做。

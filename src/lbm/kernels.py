@@ -32,10 +32,18 @@ OPP = np.array([0, 5, 6, 7, 8, 1, 2, 3, 4], dtype=np.int64)
 def _step_kernel(f, solid, tau, u_in, free_slip, convective,
                  link_y, link_x, link_i, link_q, link_sy, link_sx,
                  sigma_x, ftarget,
-                 use_mrt, Mm, Minv, Sdiag):
+                 use_mrt, Mm, Minv, Sdiag,
+                 les_on, cs_smag_sq, inlet_uy):
+    """单步：碰撞(BGK/MRT/LES) → 海绵 → 迁移 → Bouzidi 反弹/测力 → 边界。
+
+    v1.3 新增两个可选开关（关闭时与原 v1.2 内核逐位一致）：
+    - ``les_on`` + ``cs_smag_sq=C_s²``：Smagorinsky 隐式局部 τ_total；
+    - ``inlet_uy``：西边界逐 y 的横向速度 uy_b（零均值即退化为原 Zou/He）。
+    """
     ny, nx, _ = f.shape
     m = np.empty(9, dtype=np.float64)
     meq = np.empty(9, dtype=np.float64)
+    feq = np.empty(9, dtype=np.float64)
     # 1) 碰撞（BGK 或 MRT，全场含固体——固体节点仅作缓冲，随后清零）
     for y in range(ny):
         for x in range(nx):
@@ -80,10 +88,32 @@ def _step_kernel(f, solid, tau, u_in, free_slip, convective,
                     f[y, x, cidx] = acc
             else:
                 usq = ux * ux + uy * uy
+                pxx = 0.0
+                pyy = 0.0
+                pxy = 0.0
                 for i in range(9):
                     cu = CX[i] * ux + CY[i] * uy
-                    feq = W[i] * rho * (1.0 + 3.0 * cu + 4.5 * cu * cu - 1.5 * usq)
-                    f[y, x, i] += -(1.0 / tau) * (f[y, x, i] - feq)
+                    feq[i] = W[i] * rho * (1.0 + 3.0 * cu
+                                           + 4.5 * cu * cu - 1.5 * usq)
+                    if les_on:
+                        fn = f[y, x, i] - feq[i]
+                        pxx += CX[i] * CX[i] * fn
+                        pyy += CY[i] * CY[i] * fn
+                        pxy += CX[i] * CY[i] * fn
+                if les_on:
+                    # Q = sqrt(2 Π^neq:Π^neq)；隐式 Smagorinsky 二次方程正根
+                    q = np.sqrt(2.0 * max(pxx * pxx + pyy * pyy
+                                          + 2.0 * pxy * pxy, 0.0))
+                    if rho > 1e-12:
+                        disc = tau * tau + 18.0 * cs_smag_sq * q / rho
+                        tau_loc = 0.5 * (tau + np.sqrt(max(disc, 0.0)))
+                    else:
+                        tau_loc = tau  # 固体节点 f≡0，避免 0/0
+                    omega = 1.0 / tau_loc
+                else:
+                    omega = 1.0 / tau
+                for i in range(9):
+                    f[y, x, i] += -omega * (f[y, x, i] - feq[i])
     # 1b) 海绵层：向目标态 feq(ρ0, U, 0) 弛豫（吸收慢变压力波，防出口/入口反射）
     for y in range(ny):
         for x in range(nx):
@@ -136,7 +166,7 @@ def _step_kernel(f, solid, tau, u_in, free_slip, convective,
             f_new[ny - 1, x, 4] = f[ny - 1, x, 2]
             f_new[ny - 1, x, 5] = f[ny - 1, x, 1]
             f_new[ny - 1, x, 6] = f[ny - 1, x, 8]
-    # 5) 西入口 Zou/He（ux=u_in, uy=0）
+    # 5) 西入口 Zou/He（ux=u_in, uy=uy_b(y)；uy_b≡0 即 v1.2 原式）
     for y in range(ny):
         f0 = f_new[y, 0, 0]
         f1 = f_new[y, 0, 1]
@@ -144,10 +174,13 @@ def _step_kernel(f, solid, tau, u_in, free_slip, convective,
         f6 = f_new[y, 0, 6]
         f7 = f_new[y, 0, 7]
         f8 = f_new[y, 0, 8]
+        uy_b = inlet_uy[y]
         rho = (f0 + f1 + f5 + 2.0 * (f6 + f7 + f8)) / (1.0 - u_in)
         f_new[y, 0, 3] = f7 + (2.0 / 3.0) * rho * u_in
-        f_new[y, 0, 2] = f6 + 0.5 * (f5 - f1) + (1.0 / 6.0) * rho * u_in
-        f_new[y, 0, 4] = f8 + 0.5 * (f1 - f5) + (1.0 / 6.0) * rho * u_in
+        f_new[y, 0, 2] = (f6 + 0.5 * (f5 - f1) + (1.0 / 6.0) * rho * u_in
+                          + 0.5 * rho * uy_b)
+        f_new[y, 0, 4] = (f8 + 0.5 * (f1 - f5) + (1.0 / 6.0) * rho * u_in
+                          - 0.5 * rho * uy_b)
     # 6) 东出口
     for y in range(ny):
         for i in range(9):
@@ -196,4 +229,5 @@ def compile_step():
     lq = np.zeros(0)
     _step_kernel(f, np.zeros((4, 4), dtype=np.bool_), 0.8, 0.05, True, True,
                  li, li, li, lq, li, li, np.zeros(4), np.zeros(9),
-                 False, np.zeros((9, 9)), np.zeros((9, 9)), np.zeros(9))
+                 False, np.zeros((9, 9)), np.zeros((9, 9)), np.zeros(9),
+                 False, 0.0, np.zeros(4))
