@@ -351,8 +351,89 @@ class Solver3D:
         return {"uz_rms": float(sm.get("uz_rms", 0.0)),
                 "rel": float(sm.get("uz_rel", 0.0))}
 
+    def spanwise_spectrum(self, xs=None, lo: int = 1,
+                          hi: int | None = None) -> dict:
+        """末态展向谱：把 u_z 沿 z 做 rfft，给出「一个盒长内的周期数」m。
+
+        为什么需要它
+        ------------
+        v1.4 §14.4 的教训：Re=100 下 nz=8/16/24 的 St/Cd 只差 6/150 ppm，
+        看着像"展向收敛"，实则**没有三维结构可收敛**——把空判据当证据。
+        唯一能把这两种情形分开的读数是展向自由度**自己的**谱：
+        ``frac_3d=0``（m=0 绝对主导）⇒ 流动在 z 上均匀，就是二维；
+        m≥1 有峰 ⇒ 真有三维结构，且峰位给出 ``λ_z = Lz/m``。
+
+        归一化与口径：``rfft(u_z, axis=0)/nz`` 后对 y 取功率平均。``P[0]`` 是
+        展向平均分量的能量（二维分量），``Σ_{m≥1}P`` 是三维能量。
+
+        **不要把 ``frac_3d`` 单独报出来**（v1.5 实测教训）：它是"uz 内部"的
+        占比，当整个 uz 场只剩机器零（1e-16）时，p0 也是 1e-33，比值仍可给出
+        0.73 —— 首版就因此在"无三维结构"的算例上读到"73% 三维"。真正可比的
+        量是 ``p3d_rel = Σ_{m≥1}P / mean(u_x²+u_y²)``：把三维动能直接放在
+        面内动能的标尺上，二维流动给 1e-30，真三维给 1e-3–1e-1，相差 20 个
+        量级。``is_3d`` 用 ``p3d_rel > 1e-8`` 作门限（远高于 double 噪声、
+        远低于任何可测三维结构），但它只表示**三维能量可测**，**不等于失稳**：
+        长盒子里最慢的黏性模式衰减很慢（nz=64、Re=250 时 26T 只掉一个量级），
+        残余三维能量可以长期停在 1e-7 而不增长。判失稳必须再比对
+        ``scripts/11`` 的 ``decay_audit``（实测衰减率 ÷ 黏性衰减率）。
+
+        **限制（必须与结果同报）**：周期盒只允许 ``λ_z = Lz/m``。Lz=4D 时可用
+        波长是 4D/2D/1.33D/1D/0.8D…，Mode A（3–4D）落在 m=1、Mode B
+        （0.8–1D）落在 m=4/5，都只在**带边**。因此本方法能回答"有没有三维
+        结构、哪个 m 占优"，不能替代自由盒长给出自然波长（见报告 §17.3）。
+        """
+        rho, ux, uy, uz = self.macros()
+        nz, ny, nx = uz.shape
+        hi = ny - 1 if hi is None else hi
+        d = self.case.d if self.case.d > 0 else 1.0
+        if xs is None:
+            xs = [x for _, x in self._wake_stations] or [nx // 2]
+        out = {"nz": nz, "d": d, "stations": []}
+        for x in xs:
+            u = np.asarray(uz[:, lo:hi, x], dtype=np.float64)
+            a = np.fft.rfft(u, axis=0) / nz
+            p = np.mean(np.abs(a) ** 2, axis=1)
+            m = np.arange(p.size)
+            lam = np.where(m > 0, nz / np.maximum(m, 1), np.inf)
+            p0 = float(p[0])
+            p3 = float(p[1:].sum())
+            tot = p0 + p3
+            up = np.asarray(ux[:, lo:hi, x], dtype=np.float64)
+            vp = np.asarray(uy[:, lo:hi, x], dtype=np.float64)
+            inplane = float(np.mean(up * up + vp * vp))
+            k = int(np.argmax(p[1:]) + 1) if p.size > 1 else 0
+            p3_rel = (p3 / inplane) if inplane > 0 else 0.0
+            out["stations"].append({
+                "x": int(x),
+                "x_over_d": float((x - self.case.cx_c) / d),
+                "m": m.tolist(), "power": p.tolist(),
+                "lambda_over_d": (lam / d).tolist(),
+                "p0": p0, "p3d": p3, "inplane": inplane,
+                "p3d_rel": float(p3_rel),
+                "p0_rel": float(p0 / inplane) if inplane > 0 else 0.0,
+                "is_3d": bool(inplane > 0 and p3_rel > 1e-8),
+                "frac_3d": float(p3 / tot) if tot > 0 else 0.0,
+                "m_peak": k,
+                "lambda_peak_over_d": (float(nz / k / d) if k
+                                       else float("inf")),
+                "amp_peak": float(np.sqrt(2.0 * p[k])) if p.size > k else 0.0,
+            })
+        return out
+
 
 # ---------------------------------------------------------------- 解析验证
+def representable_wavelengths(nz: int, d: float) -> np.ndarray:
+    """周期盒允许的展向波长 ``λ_z = Lz/m``（以 D 为单位），按 m=1..nz/2 排列。
+
+    用来判断"某个展向扫描是否有意义"：若所有允许波长都远小于目标物理模式的
+    波长，那么"各 nz 结果一致"只能说明盒子把它压掉了，不是分辨率收敛
+    （v1.4 §14.4 的空判据）。Mode A 的波长带是 3–4D，故 ``Lz ≥ 3D`` 才可能
+    装得下；``Lz = 1D``（nz=16、D=16）在 [3D, 4D] 内没有任何允许波长。
+    """
+    m = np.arange(1, max(int(nz) // 2, 1) + 1, dtype=float)
+    return float(nz) / m / float(d)
+
+
 def channel_poiseuille(ny: int = 17, nz: int = 4, nx: int = 8, tau: float = 0.7,
                        g: float = 1e-6, steps: int | None = None,
                        rho0: float = 1.0, tail: int = 1000):

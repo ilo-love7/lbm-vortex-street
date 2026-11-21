@@ -17,8 +17,15 @@ echo "======== 09 v1.4 瞬态敏感性（6/12/16/20/24T，2D）========"
 "$PY" scripts/09_v14_transient_sensitivity.py
 echo "======== 10 v1.4 口径拆分（D 加密，固定无量纲域长）========"
 "$PY" scripts/10_v14_d_resolution.py
+echo "======== 11 v1.5 三维失稳区（E22 展向盒长 / E23 失稳 Re 阈值）========"
+"$PY" scripts/11_v15_3d_unstable.py
+echo "======== 12 v1.5 域长口径（E24 20D 下游 β 系列与截距对账）========"
+"$PY" scripts/12_v15_domain20d.py
 echo "全部完成。结果见 results/ 与 figures/"
 # 增量语义：06/08 逐 case 断点缓存，重跑只补缺失；--force 清缓存全量重算；
 #          --figures-only 只从缓存刷新 JSON/图/CSV，不重跑 CFD。
 # 08 单跑约 30 min（3D ny=320 一档占 26 min，17-18 ms/step）；先跑它可并行做文档。
 # 09 约 7 min，10 约 15 min，均为单线程 2D，可与 08 的文档工作并行。
+# 11 约 120 min（3D 串行：nz=8→64 四档 + Re=100 长盒对照 + Re=190/220 各一档）。
+#    先跑 12（约 12 min）不冲突，2D 单线程只吃一个核。
+# 12 约 12 min（2D、nx=400、五点 β 系列）。
