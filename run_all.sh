@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# N5 全流程：00 校验 → 01 基线 → 02 动画 → 03 网格收敛 → 04 收口 → 05 v1.2 → 06/07 v1.3
+# N5 全流程：00 校验 → 01 基线 → 02 动画 → 03 网格收敛 → 04 收口 → 05 v1.2 → 06/07 v1.3 → 08 v1.4 3D
 set -e
 cd "$(dirname "$0")"
 PY="${PYTHON:-D:/项目/venvs/flsoh-py312/Scripts/python.exe}"
@@ -11,6 +11,14 @@ echo "======== 06 v1.3 深化（E13 阻塞比 / E14 四口径测力 / E15 LES �
 "$PY" scripts/06_v13_deepening.py --workers 12
 echo "======== 07 v1.3 汇总表 ========"
 "$PY" scripts/07_summary_v13.py
+echo "======== 08 v1.4 三维校验（E19 解析验证 / E20 3D-2D 对照 / E21 β→0 外推） ========"
+"$PY" scripts/08_3d_validation.py
+echo "======== 09 v1.4 瞬态敏感性（6/12/16/20/24T，2D）========"
+"$PY" scripts/09_v14_transient_sensitivity.py
+echo "======== 10 v1.4 口径拆分（D 加密，固定无量纲域长）========"
+"$PY" scripts/10_v14_d_resolution.py
 echo "全部完成。结果见 results/ 与 figures/"
-# 增量语义：06 逐 case 断点缓存，重跑只补缺失；--force 清缓存全量重算；
+# 增量语义：06/08 逐 case 断点缓存，重跑只补缺失；--force 清缓存全量重算；
 #          --figures-only 只从缓存刷新 JSON/图/CSV，不重跑 CFD。
+# 08 单跑约 30 min（3D ny=320 一档占 26 min，17-18 ms/step）；先跑它可并行做文档。
+# 09 约 7 min，10 约 15 min，均为单线程 2D，可与 08 的文档工作并行。

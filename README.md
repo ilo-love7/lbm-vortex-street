@@ -69,14 +69,30 @@
 - 报告 §10–§12、`results/v13_*.json` / `v13_case_rows.csv` / `v13_summary_tables.md`（表 A–G）、4 张 `figures/v13_*.png`；
 - 关键口径限定：E13 外推对拟合阶数敏感（只报区间）；E14 用 16T 比 v1.2 的 24T 短；E15 全部是 2D 结果，入口扰动零响应是本仓库海绵协议的结构性后果，不是物理普适结论。
 
+## v1.4 结果摘要（三维 D3Q19 校验，2026-11-21）
+
+| 实验 | 结论 |
+|---|---|
+| **E19 内核验证** | 平面 Poiseuille 观测阶 **2.00/2.00/1.98**（L2 2.9e-2→3.7e-4，末段 drift 1e-6）、剪切波反测 ν 八档 **0.37–1.31%**、3D Taylor-Green 初始衰减 **0.28–0.97%**、均匀流在周期与自由滑移盒均保持 **1.7e-16**。三个口径陷阱（步数按 `H²/π²ν`、拟合窗口按相对幅值、TG 用格子波数 `2π/n`）各配回归单测。 |
+| **E20 3D vs 2D** | β=20/10/5% 三档全部 **ΔSt ≤0.04%、ΔCd=−0.16%**；初场灌三维随机噪声后 `uz` 衰减 7–9 个数量级（1.5e-12…1.7e-10）。**Re=100 的展向周期圆柱就是二维的**，v1.2/v1.3 结论不受维度怀疑（文献 Mode A 阈值 Re≈190）。 |
+| **E21 β→0 外推** | 3D 与 2D 的截距差 **0.04pp**，而两轮协议之间差 **6.1pp**；修正柱径偏置后本轮 **+1.05%**，与 v1.3 的 −4.06% 仍差 5.1pp（主因域长/瞬态）⇒ v1.3 把残余归给「2D 约束误差」**缺乏依据**（区间保留、归因撤回）。3 点二次外推零自由度，只报线性。 |
+| **E20 展向 nz** | nz=8/16/24 的 St 差 **6 ppm**、Cd 差 150 ppm —— 但这是「没有三维结构可收敛」，**不是**收敛性证据；检验展向分辨率需 Re≳190 或展向强迫。 |
+| **口径拆分（09/10）** | 6T→16T：St **+0.87%**、Cd **+3.6%**、Cl_rms **+23%**（16T 起饱和）；下游 15D→12D：St +2.2%、Cd +4.8%；柱径（β=10%）16→20→24：−0.34% / −0.05%（20→24 已收敛）、β=5% 的 16→20 仍 **+0.78%**。**三个旋钮都比维度大 1–2 个量级**，跨版本绝对数必须带域长与瞬态。 |
+
+- 生产跑墙钟 **29.9 min**（16T 协议，β=5% 一档 26 min），瞬态扫描 6.8 min，口径拆分 ~15 min；
+- **17 项新单测 → 103 项**；`results/v14_validation.json` / `v14_blockage3d.json` / `v14_case_rows.csv` / `v14_transient_sensitivity.json` / `v14_d_resolution.json`，图 `v14_validation.png` / `v14_blockage3d.png`；
+- 关键口径限定：下游仅 **15D**（绝对 Cd 比 v1.1 的 20D 域高 ~3%）；v1.3 的绝对 Cd 偏低 3.6%、Cl_rms 偏低 23%（其相对结论不变）；Re=250 的三维仍未做。
+
 ## 运行
 
 ```bash
 pip install -r requirements.txt
 bash run_all.sh        # 00 校验 → 01 Re 扫描 → 02 动画 → 03/04 收敛与对比
                        # → 05 v1.2 深化 → 06/07 v1.3 深化（均为 12 进程并行 + 断点缓存）
-python -m pytest tests/ -q   # 86 项
+                       # → 08 v1.4 三维校验 → 09 瞬态扫描 / 10 口径拆分
+python -m pytest tests/ -q   # 103 项
 python scripts/06_v13_deepening.py --figures-only   # 不重跑 CFD，只刷新 v1.3 JSON/图/CSV
+python scripts/08_3d_validation.py --figures-only   # 只从缓存刷新 v1.4 JSON/图/CSV
 ```
 
 参考实现（参数对照基准）：Philip Mocz (2020) `latticeboltzmann-python`（Princeton 教学版）。
@@ -90,14 +106,18 @@ src/lbm/               lattice(D2Q9) / solver(Bouzidi+出入口+海绵，可选 
                        forces(动量交换) / postprocess(St/统计) / plots
                        stress(v1.3 控制体双口径) / les(v1.3 Smagorinsky+入口扰动)
                        wake(v1.3 严格两截面尾流亏损) / v13(v1.3 后处理纯函数)
+                       lattice3d(v1.4 D3Q19 常量+SPEC_Y3 镜面表) / kernels3d(v1.4 并行内核)
+                       solver3d(v1.4 三维求解器 + Poiseuille/剪切波/Taylor-Green 验证)
 scripts/00-07          校验 → Re 扫描 → 涡街 GIF → 网格收敛 → v1.1 对比 → v1.2 深化
                        → v1.3 深化(E13/E14/E15，并行+缓存) → v1.3 汇总表
+scripts/08-10          v1.4 三维校验(E19/E20/E21) → 瞬态扫描 → 口径拆分(D/域长)
 tests/                 格子恒等式/求解器/边界/测力/St/Bouzidi/海绵/MRT/谱/并行调度
-                       + v1.3 应力/LES/链接守恒/尾流/汇总口径（86 项）
+                       + v1.3 应力/LES/链接守恒/尾流/汇总口径 + v1.4 三维 17 项（103 项）
 reports/               基准评测报告-N5.md / 工作记录-N5.md
 results/               baseline_metrics*.json + series_*.npz + v12_*.json / v12_cache/
-                       + v13_*.json / v13_summary_tables.md / v13_cache/ + grid_conv_*
-figures/               涡量场/力时程/升力谱 + v12_*.png + v13_*.png + GIF
+                       + v13_*.json / v13_summary_tables.md / v13_cache/
+                       + v14_*.json / v14_cache/ + grid_conv_*
+figures/               涡量场/力时程/升力谱 + v12_*.png + v13_*.png + v14_*.png + GIF
 ```
 
 ## 未做项（如实标注）
@@ -108,5 +128,11 @@ figures/               涡量场/力时程/升力谱 + v12_*.png + v13_*.png + G
 - ~~应力张量面积分双口径互证~~ → **v1.3 已做并升级为四口径互证**（MEM / CV-node / CV-link / WAKE）；结论见报告 §11.2。
 - ~~加大计算域消除 10% 阻塞~~ → **v1.3 已做 β→0 外推**（E13，把阻塞修正与 2D 约束误差定量分离）。
 - ~~Re=1000+（LES）~~ → **v1.3 已做 Smagorinsky LES 与持续入口扰动**（E15），给出 2D LES 的适用边界。
-- **3D 校验**（仍是最高优先：St 偏差随 Re 单调增大，2D 约束在 Re>180 的失稳缺失）；
+- ~~3D 校验~~ → **v1.4 已做 D3Q19 内核 + 三维圆柱**（E19/E20/E21）：三重解析验证全过，
+  Re=100 三维与二维差 <0.04%；**并推翻**「β→0 残余 = 2D 约束误差」的归因（见报告 §14.3/§15）。
+- **Re=250 三维**（v1.4 之后最高优先）：位于 Mode A 三维失稳（Re≈190）之上，
+  是 v1.3「2D 约束随 Re 增长」唯一未检验的部分。
+- **展向强迫 / 波浪入口**（检验 nz 与三维稳定性）：需先改海绵协议——目标态海绵
+  会把入口扰动完全吸收（v1.3 E15）。
+- **20D 域长下重跑 β 系列**：本轮下游仅 15D，绝对 Cd 偏高 ~3%，β→0 截距不可迁移。
 - 振荡圆柱（受迫/VIV）、串列/并列双圆柱干涉未做。
