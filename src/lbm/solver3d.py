@@ -323,6 +323,11 @@ class Solver3D:
             uz_rms = float(np.sqrt(np.mean(uz[:, lo:hi, :][:, m] ** 2)))
             out["uz_rms"] = uz_rms
             out["uz_rel"] = (uz_rms / inplane) if inplane > 0 else float("nan")
+            # 稳定性读数（v1.6）：只统计流体节点，固体里 f≡0 ⇒ ρ≡0 会污染 min。
+            # 放在这里而不是每个记录步都算，是因为它要与 uz_rel 共采样。
+            rf = rho[:, lo:hi, :][:, m]
+            out["rho_min"] = float(rf.min())
+            out["rho_max"] = float(rf.max())
         return out
 
     def section_flux(self, x: int, drop_wall_rows: bool = True) -> dict:
@@ -419,6 +424,96 @@ class Solver3D:
                 "amp_peak": float(np.sqrt(2.0 * p[k])) if p.size > k else 0.0,
             })
         return out
+
+
+    def spanwise_correlation(self, xs=None, lo: int = 1,
+                             hi: int | None = None) -> dict:
+        """展向两点相关 ``R(r)`` 与积分尺度 ``L_c``（一个拓扑独立的读数）。
+
+        为什么还要它（谱已经给了 m）
+        ---------------------------
+        谱的峰位受**盒长**约束（``λ = Lz/m`` 只取离散值），盒子一换，峰位就跳；
+        相关函数在物理空间算，是全波长谱的傅里叶变换，换盒子不改形状（只要
+        盒子装得下）。两者一起看才能区分"真实空间结构变了"与"盒子只允许别的
+        离散波长"。v1.5 的教训是**别只用一把尺子**。
+
+        口径（必须写明，否则数字不可比）
+        --------------------------------
+        - **循环相关**：``R(r) = mean_z u'(z) u'(z+r)``，``u' = u_z − <u_z>_z``
+          （先减展向均值，否则 m=0 的直流项把 R 钉在 1，看不出任何结构）。
+        - **积分尺度**：``L_c = Σ_{r=0}^{r0−1} R(r)``（格子单位，矩形法，dz=1），
+          ``r0`` 是首个 ``R ≤ 0`` 的位置。不除以 R(0)（已归一化），不做 1/e 拟合
+          ——指数拟合在双模式叠加时会给出无意义的长度。
+        - 纯正弦 ``u = A sin(2πm z/nz)`` 时解析结果为 ``R(r)=cos(2πm r/nz)``、
+          ``r0 = nz/(4m)``：单测按此三条锁死。
+
+        ``valid=False`` 表示该站 ``u_z`` 在 z 上是常数（二维流动），``R`` 无定义。
+        """
+        rho, ux, uy, uz = self.macros()
+        nz, ny, nx = uz.shape
+        hi = ny - 1 if hi is None else hi
+        d = self.case.d if self.case.d > 0 else 1.0
+        if xs is None:
+            xs = [x for _, x in self._wake_stations] or [nx // 2]
+        nmax = nz // 2
+        out = {"nz": nz, "d": d, "stations": []}
+        for x in xs:
+            u = np.asarray(uz[:, lo:hi, x], dtype=np.float64)
+            u = u - u.mean(axis=0, keepdims=True)
+            var = float(np.mean(u * u))
+            rec = {"x": int(x), "x_over_d": float((x - self.case.cx_c) / d),
+                   "valid": bool(var > 0.0)}
+            if var <= 0.0:
+                rec.update({"R": [0.0] * (nmax + 1), "r0": 0,
+                            "Lc_over_d": 0.0, "r0_over_d": 0.0})
+                out["stations"].append(rec)
+                continue
+            R = [float(np.mean(u * np.roll(u, -r, axis=0))) / var
+                 for r in range(nmax + 1)]
+            r0 = next((i for i, v in enumerate(R) if v <= 0.0), nmax + 1)
+            Lc = float(np.sum(R[:r0]))
+            rec.update({"R": R, "r_over_d": [r / d for r in range(nmax + 1)],
+                        "r0": int(r0), "r0_over_d": float(r0 / d),
+                        "Lc_over_d": float(Lc / d)})
+            out["stations"].append(rec)
+        return out
+
+
+# 展向模式的物理波长带（文献值，用于把离散 m 归到 A/B 两支）
+SPAN_MODE_BANDS = {"A": (3.0, 4.0), "B": (0.8, 1.2)}
+
+
+def mode_band_energy(power, nz: int, d: float, bands=None) -> dict:
+    """把展向谱功率按**物理波长带**汇总（而不是按离散 m 逐个看）。
+
+    周期盒只允许 ``λ = Lz/m``，同一个物理模式在不同盒长下落成不同的 m：
+    Lz=4D 时 Mode A(3–4D) 只能落到 m=1、Mode B(0.8–1D) 落到 m=4/5；
+    Lz=6D 时前者落 m=2、后者落 m=6/7。**只报峰位 m 无法跨盒长比较**，
+    所以这里把「波长落在带内」的 m 全部加总，给出与盒子无关的能量占比。
+
+    返回每个带的 ``m`` 列表、能量、``frac_of_p3d``，以及不属于任何带的
+    ``unassigned_m``。``repr_ok=False`` 表示该带在本盒长下**没有可表示的 m**
+    （此时"带内能量为 0"是盒子造成的，不能当物理结论——v1.4 空判据的同类陷阱）。
+    """
+    p = np.asarray(power, dtype=np.float64)
+    bands = SPAN_MODE_BANDS if bands is None else bands
+    m = np.arange(p.size)
+    lam = np.where(m > 0, float(nz) / np.maximum(m, 1) / float(d), np.inf)
+    p3 = float(p[1:].sum()) if p.size > 1 else 0.0
+    out = {"p3d": p3, "bands": {}}
+    used: set[int] = set()
+    for name, (lo, hi) in bands.items():
+        sel = (m > 0) & (lam >= lo) & (lam <= hi)
+        idx = [int(i) for i in np.flatnonzero(sel)]
+        e = float(p[sel].sum()) if sel.any() else 0.0
+        out["bands"][name] = {
+            "lambda_range": [float(lo), float(hi)],
+            "m": idx, "repr_ok": bool(idx),
+            "energy": e,
+            "frac_of_p3d": (e / p3) if p3 > 0 else 0.0}
+        used.update(idx)
+    out["unassigned_m"] = [i for i in range(1, p.size) if i not in used]
+    return out
 
 
 # ---------------------------------------------------------------- 解析验证
