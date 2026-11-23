@@ -2,7 +2,7 @@
 
 从零实现**二维格子 Boltzmann（D2Q9 + BGK）**流体求解器：圆柱绕流卡门涡街，Re=50–200 参数扫描，升阻力系数与 Strouhal 数对照文献经验式。
 
-> 博远线上科研提案 N5 ｜ 流体/CFD ｜ 数值仿真 ｜ v1.7.0 ｜ 2026-11-23
+> 博远线上科研提案 N5 ｜ 流体/CFD ｜ 数值仿真 ｜ v1.8.0 ｜ 2026-11-23
 
 ## 方法
 
@@ -125,7 +125,21 @@
 - 生产墙钟：3D 四档 81/79/79/78 min（串行单进程，总 **5h17m**）；比 v1.6 长窗 63 min 慢约 28%（5 次窗末全场宏量 + 定期 gc）；
 - **16 项新单测 → 141 项**；`results/v17_window.json` / `v17_window_rows.csv`，图 `v17_window_lock.png`；
 - 关键口径限定：**10T 窗 St 差实测达 6%，远超 FFT 分辨率 0.005** —— 非平稳信号下主频本身在移动，只有后两窗可读；**尾窗 <16 步必须并入前一窗**（Re=400 的 1 步尾窗曾让整档归约失败，重跑 78 min）；**参考文件名漂移会静默产出空偏差表**，已改为 glob + 缺档即 raise；
-- **未做**：四档都只到 50T，Re=350/400 瞬态未走完（需 80–100T，约 4×2.5 h）；`Lz=8D` 纯盒长档仍未做（4D↔6D 混着盒长与波长两个旋钮）；低 τ 精度校准未做。
+- **未做（v1.8 已补前两项，见下）**：四档都只到 50T，Re=350/400 瞬态未走完（需 80–100T，约 4×2.5 h）；`Lz=8D` 纯盒长档仍未做（4D↔6D 混着盒长与波长两个旋钮）；低 τ 精度校准未做。
+
+## v1.8 结果摘要（100T 长窗 / 低 τ 误差预算，2026-11-23）
+
+| 实验 | 结论 |
+|---|---|
+| **E34 Re=350 100T** | 全程峰值 **48.8T / uz_rel=0.0971**，50T 后峰值 75.7T / 0.0914；末窗/峰值=0.790，末3窗斜率 -0.00102/窗 ⇒ regime **decaying**；60–80T→80–100T 块漂移 Cd -0.05% / Cl_rms -2.67% / uz -2.06%。 |
+| **E34 Re=400 100T** | 全程峰值 **75.8T / uz_rel=0.1009**，50T 后峰值 75.8T / 0.1009；末窗/峰值=0.859，末3窗斜率 -0.00069/窗 ⇒ regime **persistent_high**；60–80T→80–100T 块漂移 Cd -0.69% / Cl_rms -15.22% / uz +5.40%。 |
+| **E35 交叉核对** | 前 40T 四窗 Cd/Cl_rms/St 与 v1.7 **逐位相同**（差 0）；40–50T 窗因 v1.7 的 1 步尾窗并入差 1–2 步（Re=350 的 Cd 相对差 3.1e-05%），按 1% 容差核对 —— 不说"前 50T 逐位相同"。 |
+| **E36 低 τ 精度** | τ=0.505–0.55 八档剪切波反测 ν 的相对误差稳定在 **0.32%**（τ=0.505: 0.322%，τ=0.55: 0.318%）；Re=400 的 τ=0.512 对应有效 Re=398.72（偏移 **-0.321%**）⇒ 数值误差远小于 3D−2D 的 Cd 差（约 8%），不能解释三维效应。 |
+
+- 生产墙钟：Re=350 **168.2 min** + Re=400 **121.5 min**（串行单进程，总 **4h50m**）+ 低 τ 扫描 18 min（并行诊断）；
+- **16 项新单测 → 157 项**；`results/v18_longrun.json` / `v18_longrun_rows.csv` / `v18_lowtau.json`，图 `v18_longrun_100t.png`；
+- 关键口径限定：**第 5 窗的 1–2 步差不能写"逐位相同"**；regime 双读数（末3窗斜率 + 末窗/峰值）只是判读辅助，不是物理常数；低 τ 扫描只给误差预算，未做 Re=400 的低 τ 复算。
+- **未做**：`Lz=8D` 纯盒长档仍未做；若高 Re 在 100T 仍 `persistent_high`，下一步应改边界/强迫而非继续拉长窗。
 
 ## 运行
 
@@ -136,7 +150,9 @@ bash run_all.sh        # 00 校验 → 01 Re 扫描 → 02 动画 → 03/04 收�
                        # → 08 v1.4 三维校验 → 09 瞬态扫描 / 10 口径拆分
                        # → 11 v1.5 三维失稳区 / 12 20D 域长 / 13 缺口审计
                        # → 14 v1.6 高 Re 三维（Lz=6D，Re=250/300/350/400）
-python -m pytest tests/ -q   # 125 项
+                       # → 15 v1.7 四档 50T 五窗 → 16 v1.8 Re=350/400 100T 十窗
+                       # → 17 v1.8 低 τ 精度校准（8 档剪切波）
+python -m pytest tests/ -q   # 157 项
 python scripts/06_v13_deepening.py --figures-only   # 不重跑 CFD，只刷新 v1.3 JSON/图/CSV
 python scripts/08_3d_validation.py --figures-only   # 只从缓存刷新 v1.4 JSON/图/CSV
 python scripts/11_v15_3d_unstable.py --smoke         # Re=250 稳定性 + 展向谱自检
@@ -145,6 +161,10 @@ python scripts/14_v16_highre.py --cases 250,300      # 分批并行（配合 NUM
 python scripts/14_v16_highre.py --long250            # Re=250 长窗 40T+10T（定常性对照）
 python scripts/14_v16_highre.py --box-extra          # 只跑 Re=250 的 Lz=8D（本轮抢核未跑，留给后续）
 python scripts/14_v16_highre.py --figures-only       # 只从缓存重画 v1.6 三张图
+python scripts/15_v17_window.py --cases 250          # v1.7 分批跑（四档齐后不带参数汇总）
+python scripts/16_v18_longrun.py --cases 350,400     # v1.8 Re=350/400 各 100T（约 5h）
+python scripts/16_v18_longrun.py --smoke             # v1.8 采样器自检（0.5T，约 1 min）
+python scripts/17_v18_lowtau.py                      # v1.8 低 τ 八档剪切波反测 ν（约 10-18 min）
 ```
 
 参考实现（参数对照基准）：Philip Mocz (2020) `latticeboltzmann-python`（Princeton 教学版）。
@@ -168,18 +188,22 @@ scripts/08-10          v1.4 三维校验(E19/E20/E21) → 瞬态扫描 → 口�
 scripts/11-13          v1.5 三维失稳区(E22 盒长/E23 阈值) → 20D 域长(E24) → 缺口审计(E25)
 scripts/14             v1.6 高 Re 三维(E26 Lz=6D 四档 Re / E27 盒长 4D-6D-8D 分离)
 scripts/15             v1.7 窗长锁住(四档 50T × 5 个 10T 窗；峰值时刻/漂移/随 Re 趋势)
+scripts/16             v1.8 超长窗(Re=350/400 各 100T × 10 个 10T 窗；尾窗斜率/峰值比/前后半程块漂移)
+scripts/17             v1.8 低 τ 校准(τ=0.505-0.8 八档剪切波反测 ν；换算有效 Re 误差预算)
 tests/                 格子恒等式/求解器/边界/测力/St/Bouzidi/海绵/MRT/谱/并行调度
                        + v1.3 应力/LES/链接守恒/尾流/汇总口径 + v1.4 三维 17 项
                        + v1.5 展向谱 9 项 + v1.6 相关/模式带/饱和律 13 项
-                       + v1.7 窗切分/峰值/漂移/趋势 16 项（141 项）
+                       + v1.7 窗切分/峰值/漂移/趋势 16 项
+                       + v1.8 尾窗/判据/交叉核对 12 项 + 低 τ 步数/误差换算 4 项（157 项）
 reports/               基准评测报告-N5.md / 工作记录-N5.md
 results/               baseline_metrics*.json + series_*.npz + v12_*.json / v12_cache/
                        + v13_*.json / v13_summary_tables.md / v13_cache/
                        + v14_*.json / v14_cache/ + grid_conv_*
                        + v15_*.json / v15_cache/ + v16_*.json / v16_cache/
                        + v17_*.json / v17_window_rows.csv / v17_cache/
+                       + v18_longrun.json / v18_longrun_rows.csv / v18_cache/
 figures/               涡量场/力时程/升力谱 + v12_*.png + v13_*.png + v14_*.png
-                       + v15_*.png + v16_*.png + v17_*.png + GIF
+                       + v15_*.png + v16_*.png + v17_*.png + v18_*.png + GIF
 ```
 
 ## 未做项（如实标注）
