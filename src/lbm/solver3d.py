@@ -52,6 +52,7 @@ class Case3D:
     sponge_width: int = 32
     sponge_sigma: float = 0.08
     trip: float = 1e-3
+    trip_seed: int = 42         # v1.9：只改初场随机实现；默认 42 与历史逐位相同
     bouzidi: bool = True
     body_force: float = 0.0           # 仅 x 向（通道验证用）
     les: bool = False
@@ -178,7 +179,7 @@ class Solver3D:
         uy = np.zeros((c.nz, c.ny, c.nx))
         uz = np.zeros((c.nz, c.ny, c.nx))
         if c.trip > 0:
-            rng = np.random.default_rng(42)
+            rng = np.random.default_rng(c.trip_seed)
             uy += c.trip * rng.standard_normal(uy.shape)
             uz += c.trip * rng.standard_normal(uz.shape)
         self.f = equilibrium3d(rho, ux, uy, uz)

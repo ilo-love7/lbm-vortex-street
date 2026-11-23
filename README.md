@@ -2,7 +2,7 @@
 
 从零实现**二维格子 Boltzmann（D2Q9 + BGK）**流体求解器：圆柱绕流卡门涡街，Re=50–200 参数扫描，升阻力系数与 Strouhal 数对照文献经验式。
 
-> 博远线上科研提案 N5 ｜ 流体/CFD ｜ 数值仿真 ｜ v1.8.0 ｜ 2026-11-23
+> 博远线上科研提案 N5 ｜ 流体/CFD ｜ 数值仿真 ｜ v1.9.0 ｜ 2026-11-23
 
 ## 方法
 
@@ -139,7 +139,21 @@
 - 生产墙钟：Re=350 **168.2 min** + Re=400 **121.5 min**（串行单进程，总 **4h50m**）+ 低 τ 扫描 18 min（并行诊断）；
 - **16 项新单测 → 157 项**；`results/v18_longrun.json` / `v18_longrun_rows.csv` / `v18_lowtau.json`，图 `v18_longrun_100t.png`；
 - 关键口径限定：**第 5 窗的 1–2 步差不能写"逐位相同"**；regime 双读数（末3窗斜率 + 末窗/峰值）只是判读辅助，不是物理常数；低 τ 扫描只给误差预算，未做 Re=400 的低 τ 复算。
-- **未做**：`Lz=8D` 纯盒长档仍未做；若高 Re 在 100T 仍 `persistent_high`，下一步应改边界/强迫而非继续拉长窗。
+- **未做**：`Lz=8D` 纯盒长档仍未做；高 Re 在 100T 仍 `persistent_high`，**v1.9 已按此改强迫/边界做消融（见下）**。
+
+## v1.9 结果摘要（强迫/边界消融，2026-11-23）
+
+| 实验 | 结论 |
+|---|---|
+| **E37 基准档** | 复用 v1.8 Re=400 100T 缓存（非新跑）：8 项逐窗指标均 10/10 窗逐位相同；70–100T uz_rel=0.08809、峰值 75.8T、regime `persistent_high`。 |
+| **E37 trip=1e-4（0.1×）** | 70–100T uz_rel 幅值比 0.915、全局峰值差 -52.7T、Cd 比 1.005、St 比 0.992（增长率 0.1893/T）。 |
+| **E37 trip=1e-2（10×）** | 70–100T uz_rel 幅值比 0.950、全局峰值差 -70.8T、Cd 比 1.004、St 比 0.997（增长率 0.0144/T）。 |
+| **E37 种子43（同幅度）** | 70–100T uz_rel 幅值比 0.938、全局峰值差 -63.8T、Cd 比 1.003、St 比 0.990（增长率 0.0700/T）。 |
+| **E37 零扰动对照** | 50T 内 uz_rel=1.07e−16、p3d_rel=0.00e+00（双读数机器零）⇒ 无初场种子时不起三维；不参与幅值比判据。 |
+
+- 14 项新单测 → **171 项**；`results/v19_forcing.json` / `v19_forcing_rows.csv`，图 `v19_forcing_ablation.png`；
+- 关键口径限定：`trip` 只在 t=0 注入，**不是持续强迫**；零扰动档只证明「无初场种子时不起三维」，不能外推为「流场永不相干」；
+- 联合判据：**`self_sustained_attractor`**。详见报告 §24。
 
 ## 运行
 
@@ -152,7 +166,8 @@ bash run_all.sh        # 00 校验 → 01 Re 扫描 → 02 动画 → 03/04 收�
                        # → 14 v1.6 高 Re 三维（Lz=6D，Re=250/300/350/400）
                        # → 15 v1.7 四档 50T 五窗 → 16 v1.8 Re=350/400 100T 十窗
                        # → 17 v1.8 低 τ 精度校准（8 档剪切波）
-python -m pytest tests/ -q   # 157 项
+                       # → 18 v1.9 强迫/边界消融（Re=400，trip 幅度/种子/无滑移/零扰动）
+python -m pytest tests/ -q   # 171 项
 python scripts/06_v13_deepening.py --figures-only   # 不重跑 CFD，只刷新 v1.3 JSON/图/CSV
 python scripts/08_3d_validation.py --figures-only   # 只从缓存刷新 v1.4 JSON/图/CSV
 python scripts/11_v15_3d_unstable.py --smoke         # Re=250 稳定性 + 展向谱自检
@@ -165,6 +180,9 @@ python scripts/15_v17_window.py --cases 250          # v1.7 分批跑（四档�
 python scripts/16_v18_longrun.py --cases 350,400     # v1.8 Re=350/400 各 100T（约 5h）
 python scripts/16_v18_longrun.py --smoke             # v1.8 采样器自检（0.5T，约 1 min）
 python scripts/17_v18_lowtau.py                      # v1.8 低 τ 八档剪切波反测 ν（约 10-18 min）
+python scripts/18_v19_forcing.py --cases base,trip_lo,trip_hi,seed43,notrip
+                                                     # v1.9 强迫/边界消融（约 9h，分档缓存）
+python scripts/18_v19_forcing.py --smoke             # v1.9 采样器/开关自检（约 3 min）
 ```
 
 参考实现（参数对照基准）：Philip Mocz (2020) `latticeboltzmann-python`（Princeton 教学版）。
@@ -190,11 +208,13 @@ scripts/14             v1.6 高 Re 三维(E26 Lz=6D 四档 Re / E27 盒长 4D-6D
 scripts/15             v1.7 窗长锁住(四档 50T × 5 个 10T 窗；峰值时刻/漂移/随 Re 趋势)
 scripts/16             v1.8 超长窗(Re=350/400 各 100T × 10 个 10T 窗；尾窗斜率/峰值比/前后半程块漂移)
 scripts/17             v1.8 低 τ 校准(τ=0.505-0.8 八档剪切波反测 ν；换算有效 Re 误差预算)
+scripts/18             v1.9 强迫/边界消融(Re=400 100T；trip 幅度/随机种子/零扰动/无滑移壁)
 tests/                 格子恒等式/求解器/边界/测力/St/Bouzidi/海绵/MRT/谱/并行调度
                        + v1.3 应力/LES/链接守恒/尾流/汇总口径 + v1.4 三维 17 项
                        + v1.5 展向谱 9 项 + v1.6 相关/模式带/饱和律 13 项
                        + v1.7 窗切分/峰值/漂移/趋势 16 项
-                       + v1.8 尾窗/判据/交叉核对 12 项 + 低 τ 步数/误差换算 4 项（157 项）
+                       + v1.8 尾窗/判据/交叉核对 12 项 + 低 τ 步数/误差换算 4 项
+                       + v1.9 种子/幅值/增长率/消融判据 14 项（171 项）
 reports/               基准评测报告-N5.md / 工作记录-N5.md
 results/               baseline_metrics*.json + series_*.npz + v12_*.json / v12_cache/
                        + v13_*.json / v13_summary_tables.md / v13_cache/
@@ -202,8 +222,10 @@ results/               baseline_metrics*.json + series_*.npz + v12_*.json / v12_
                        + v15_*.json / v15_cache/ + v16_*.json / v16_cache/
                        + v17_*.json / v17_window_rows.csv / v17_cache/
                        + v18_longrun.json / v18_longrun_rows.csv / v18_cache/
+                       + v19_forcing.json / v19_forcing_rows.csv / v19_cache/
 figures/               涡量场/力时程/升力谱 + v12_*.png + v13_*.png + v14_*.png
-                       + v15_*.png + v16_*.png + v17_*.png + v18_*.png + GIF
+                       + v15_*.png + v16_*.png + v17_*.png + v18_*.png
+                       + v19_*.png + GIF
 ```
 
 ## 未做项（如实标注）
@@ -230,5 +252,9 @@ figures/               涡量场/力时程/升力谱 + v12_*.png + v13_*.png + v
   λ=Lz/m）与 `Lz=8D` 纯盒长档（nz=128 抢核取消，见报告 §20.3）。
 - ~~Re=300–400 三维~~ → **v1.6 已做**（E26）：四档 3D↔2D 配对，Cl_rms 相对二维
   −15.9 / −40.9 / −57.2 / −72.9%；但谱/波长读数受窗长污染，v1.7 正在锁窗（报告 §22）。
+- ~~高 Re 非定常来源（强迫 vs 自持）~~ → **v1.9 已做**（E37）：trip 幅度 0.1×/10×
+  与换种子的 70–100T uz_rel 是基准的 91.5%/95.0%/93.8%，Cd/St 比在 1.00±0.005，
+  零扰动档双读数机器零 ⇒ `self_sustained_attractor`；但**无滑移壁档未跑**，
+  且 trip 只在 t=0 注入，不能外推到"存在持续外部强迫"的情形（报告 §24）。
 - **展向强迫 / 波浪入口**：需先改海绵协议——目标态海绵会把入口扰动完全吸收（v1.3 E15）。
 - 振荡圆柱（受迫/VIV）、串列/并列双圆柱干涉未做。

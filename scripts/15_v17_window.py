@@ -200,12 +200,17 @@ def run_2d(re: float, ny: int = NY20, t_trans: float = T_TRANS) -> dict:
 # ---------------------------------------------------------------- 多窗 3D
 def run_3d_windowed(re: float, nz: int = NSPAN6, ny: int = NY20,
                     t_trans: float = T_TRANS, t_rec: float = T_REC,
-                    tag: str = "t40") -> dict:
+                    tag: str = "t40", case_extra: dict | None = None) -> dict:
     """跑满 t_trans+t_rec，全程记录力与 uz_rel，在每个 10T 窗末抓谱/相关。
 
     `t_rec` 暴露出来只为 smoke 能跑 0.4T；生产永远用默认的 10T。
+    `case_extra` 是 v1.9 加的消融开关（trip / trip_seed / top_bottom）；
+    默认 None 时完全沿用历史构造路径，输出必须逐位相同。
     """
-    case = Case3D(ny=ny, nz=nz, re=re, **GEO)
+    kw = dict(ny=ny, nz=nz, re=re, **GEO)
+    if case_extra:
+        kw.update(case_extra)
+    case = Case3D(**kw)
     T = _period(case)
     qf = 0.5 * case.rho0 * case.u_in ** 2 * case.d
     sim = Solver3D(case)
