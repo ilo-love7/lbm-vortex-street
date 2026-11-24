@@ -33,6 +33,8 @@ echo "======== 17 v1.8 低 τ 精度校准（τ=0.505-0.8 剪切波反测 ν）=
 "$PY" scripts/17_v18_lowtau.py
 echo "======== 18 v1.9 强迫/边界消融（Re=400 100T；trip 幅度/种子/零扰动/壁面）========"
 "$PY" scripts/18_v19_forcing.py
+echo "======== 19 v1.10 纯盒长分离（Re=250；Lz=4D/8D 各 40T+10T；6D 复用 v1.6 缓存）========"
+"$PY" scripts/19_v110_boxlength.py
 echo "全部完成。结果见 results/ 与 figures/"
 # 增量语义：06/08/11/12/13/14 逐 case 断点缓存，重跑只补缺失；--force 清缓存全量重算；
 #          --figures-only 只从缓存刷新 JSON/图/CSV，不重跑 CFD。

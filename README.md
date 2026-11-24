@@ -2,7 +2,7 @@
 
 从零实现**二维格子 Boltzmann（D2Q9 + BGK）**流体求解器：圆柱绕流卡门涡街，Re=50–200 参数扫描，升阻力系数与 Strouhal 数对照文献经验式。
 
-> 博远线上科研提案 N5 ｜ 流体/CFD ｜ 数值仿真 ｜ v1.9.0 ｜ 2026-11-23
+> 博远线上科研提案 N5 ｜ 流体/CFD ｜ 数值仿真 ｜ v1.10.0 ｜ 2026-11-24
 
 ## 方法
 
@@ -155,6 +155,20 @@
 - 关键口径限定：`trip` 只在 t=0 注入，**不是持续强迫**；零扰动档只证明「无初场种子时不起三维」，不能外推为「流场永不相干」；
 - 联合判据：**`self_sustained_attractor`**。详见报告 §24。
 
+## v1.10 结果摘要（纯盒长分离，2026-11-24）
+
+同协议同窗长（Re=250/β20%/dz=1 lu/40T+10T）三点：4D(nz=64) / 6D(复用 v1.6 t40 缓存) / 8D(nz=128)。
+
+| 实验 | 结论 |
+|---|---|
+| **E38 6D 长窗态** | 已进 m=2 / λ=3D（短窗 m=1 / λ=6D）⇒ 证明短窗分离不了允许波长。 |
+| **E38 4D 长窗态（反读）** | 短窗 m=1/λ=4D，40T 长窗主导峰移到 **m=2/λ=2D**（A 带外）——4D 盒太短、Mode A 的 m=1 未稳住，原定"4D↔8D 同 λ_A=4D 纯盒长对"在长窗下不成立。 |
+
+- 跨盒长**可比**读数：谱重心 λ_c/D、Mode A/B 带占比、相关长度 L_c/D（λ 或拓扑定义）；**不可比**：m_peak（λ_z=Lz/m，盒长变则编号变）。
+- 判据：以 Cl_rms 相对差的"纯盒长对 / 含波长对"比值归因；阈值与数字见报告 §25。
+- 11 项新单测 → **182 项**；`results/v110_boxlength.json`，图 `v110_boxlength.png`；
+- 关键口径限定：周期盒只给 λ_z=Lz/m，"可表示 λ_A=4D"与"长窗实际选中的模式"是两回事——4D 可表示 m=1/λ=4D 但长窗选中 m=2/λ=2D，判据只做定性归因、不给精度的盒长修正系数。
+
 ## 运行
 
 ```bash
@@ -167,7 +181,8 @@ bash run_all.sh        # 00 校验 → 01 Re 扫描 → 02 动画 → 03/04 收�
                        # → 15 v1.7 四档 50T 五窗 → 16 v1.8 Re=350/400 100T 十窗
                        # → 17 v1.8 低 τ 精度校准（8 档剪切波）
                        # → 18 v1.9 强迫/边界消融（Re=400，trip 幅度/种子/无滑移/零扰动）
-python -m pytest tests/ -q   # 171 项
+                       # → 19 v1.10 纯盒长分离（Re=250，Lz=4D/6D/8D 同 40T+10T 窗）
+python -m pytest tests/ -q   # 182 项
 python scripts/06_v13_deepening.py --figures-only   # 不重跑 CFD，只刷新 v1.3 JSON/图/CSV
 python scripts/08_3d_validation.py --figures-only   # 只从缓存刷新 v1.4 JSON/图/CSV
 python scripts/11_v15_3d_unstable.py --smoke         # Re=250 稳定性 + 展向谱自检
@@ -183,6 +198,11 @@ python scripts/17_v18_lowtau.py                      # v1.8 低 τ 八档剪切�
 python scripts/18_v19_forcing.py --cases base,trip_lo,trip_hi,seed43,notrip
                                                      # v1.9 强迫/边界消融（约 9h，分档缓存）
 python scripts/18_v19_forcing.py --smoke             # v1.9 采样器/开关自检（约 3 min）
+python scripts/19_v110_boxlength.py --cases 64       # v1.10 4D 长窗 40T+10T（单独排程）
+NUMBA_NUM_THREADS=8 python scripts/19_v110_boxlength.py --cases 128
+                                                     # v1.10 8D 长窗（nz=128，勿抢核，约 1.5-2h）
+python scripts/19_v110_boxlength.py --resummarize    # 不重跑，从缓存汇总+出图
+python scripts/19_v110_boxlength.py --smoke          # v1.10 自检（0.3T）
 ```
 
 参考实现（参数对照基准）：Philip Mocz (2020) `latticeboltzmann-python`（Princeton 教学版）。
@@ -209,12 +229,14 @@ scripts/15             v1.7 窗长锁住(四档 50T × 5 个 10T 窗；峰值时
 scripts/16             v1.8 超长窗(Re=350/400 各 100T × 10 个 10T 窗；尾窗斜率/峰值比/前后半程块漂移)
 scripts/17             v1.8 低 τ 校准(τ=0.505-0.8 八档剪切波反测 ν；换算有效 Re 误差预算)
 scripts/18             v1.9 强迫/边界消融(Re=400 100T；trip 幅度/随机种子/零扰动/无滑移壁)
+scripts/19             v1.10 盒长实验(Re=250；Lz=4D/6D/8D 同 40T+10T；跨盒长可比读数+4D长窗峰移反读)
 tests/                 格子恒等式/求解器/边界/测力/St/Bouzidi/海绵/MRT/谱/并行调度
                        + v1.3 应力/LES/链接守恒/尾流/汇总口径 + v1.4 三维 17 项
                        + v1.5 展向谱 9 项 + v1.6 相关/模式带/饱和律 13 项
                        + v1.7 窗切分/峰值/漂移/趋势 16 项
                        + v1.8 尾窗/判据/交叉核对 12 项 + 低 τ 步数/误差换算 4 项
-                       + v1.9 种子/幅值/增长率/消融判据 14 项（171 项）
+                       + v1.9 种子/幅值/增长率/消融判据 14 项
+                       + v1.10 盒长分离/跨盒长可比/判据/4D反读 11 项（182 项）
 reports/               基准评测报告-N5.md / 工作记录-N5.md
 results/               baseline_metrics*.json + series_*.npz + v12_*.json / v12_cache/
                        + v13_*.json / v13_summary_tables.md / v13_cache/
@@ -223,9 +245,10 @@ results/               baseline_metrics*.json + series_*.npz + v12_*.json / v12_
                        + v17_*.json / v17_window_rows.csv / v17_cache/
                        + v18_longrun.json / v18_longrun_rows.csv / v18_cache/
                        + v19_forcing.json / v19_forcing_rows.csv / v19_cache/
+                       + v110_boxlength.json / v110_cache/
 figures/               涡量场/力时程/升力谱 + v12_*.png + v13_*.png + v14_*.png
                        + v15_*.png + v16_*.png + v17_*.png + v18_*.png
-                       + v19_*.png + GIF
+                       + v19_*.png + v110_*.png + GIF
 ```
 
 ## 未做项（如实标注）
@@ -249,7 +272,8 @@ figures/               涡量场/力时程/升力谱 + v12_*.png + v13_*.png + v
   "需把 dz 加密到 0.125D"是**错的**（实际 dz 已是 0.0625D，λ=1D 有 16 点），
   缺的是盒长：Lz=6D 让 Mode A（3–4D）与 Mode B（0.8–1.2D）都离开带边，
   B 带能量占比 0.056→0.199（Re=250→400）。**仍未做**：自由波长（周期盒只给
-  λ=Lz/m）与 `Lz=8D` 纯盒长档（nz=128 抢核取消，见报告 §20.3）。
+  λ=Lz/m）。~~`Lz=8D` 纯盒长档~~ → **v1.10 已做**（E38）：同 40T+10T 窗补 4D/8D
+  与复用 6D 三点，4D↔8D 同为 λ_A=4D 钉住波长只变盒长（报告 §25）。
 - ~~Re=300–400 三维~~ → **v1.6 已做**（E26）：四档 3D↔2D 配对，Cl_rms 相对二维
   −15.9 / −40.9 / −57.2 / −72.9%；但谱/波长读数受窗长污染，v1.7 正在锁窗（报告 §22）。
 - ~~高 Re 非定常来源（强迫 vs 自持）~~ → **v1.9 已做**（E37）：trip 幅度 0.1×/10×
